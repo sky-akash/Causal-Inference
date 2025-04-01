@@ -1,0 +1,229 @@
+# Loading the Data and Preprocessing the tables for SCM Predictors.
+
+```{r}
+# Loading the required libraries.
+library(tidyverse)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(readr)
+
+```
+
+
+# Predictor Datasets 
+```{r}
+sgr_cp_97_16 <- read_csv("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Growth Rates 2001-2014\\State UTs wise Growth Rate - GSDP % (Constant Prices) from 1997-98 to 2015-2016.csv") # data for State UT's Growth Rate 
+
+lr_01_15 <- read_csv("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Literacy Rates\\StateUTs-wise Literacy Rates as per Census 2001 and 2011.csv") # data for Literacy Rate
+
+pc_income <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Per_Capita Income\\Per_Capita_Income_2004-2020.xlsx") # data for Per Capita Income
+
+```
+
+### Processing data for State Domenstic Growth Rates
+#### Cleaning the Data
+
+```{r}
+years <- paste0(1997:2016)
+
+# Combine with the "State" column
+colnames(sgr_cp_97_16) <- c("State", years)
+
+
+```
+
+#### Converting to Long Format
+```{r}
+
+sgr_cp_long_data <- sgr_cp_97_16 %>%
+  gather(key = "Year", value = "SDP_GrowthRate", -State)
+
+sgr_cp_long_data <- sgr_cp_97_16 %>%
+  mutate(Predictor = "SDP_Growth Rate") %>%
+  gather(key = "Year", value = "Value", -State, - Predictor)
+
+```
+
+#### Unique State Names
+```{r}
+# Unique Names of States used for Standardization
+unique(sgr_cp_long_data$State)
+```
+
+### Processing data for Literacy Rate (the rates from census were available for 2001 and 2011, for the remaining years, the rates have been estimated)
+#### Cleaning the data
+
+```{r}
+View(lr_01_15)
+str(lr_01_15)
+```
+
+#### converting to the Long Format
+
+```{r}
+lr_long_data <- lr_01_15 %>%
+  select(-CAGR, -`Sl. No.`) %>%
+  mutate(Predictor = "Literacy Growth Rate") %>%
+  gather(key = "Year", value = "Value", -`India/States/UTs`, -Predictor)
+
+colnames(lr_long_data) <- c("State", "Predictor", "Year", "Value")
+```
+
+#### Unique State Names
+
+```{r}
+unique(lr_long_data$State)
+```
+
+### Processing the data for Per-Capita Income
+Note: Data is available from 2004 onwards only.
+
+```{r}
+
+View(pc_income)
+head(pc_income)
+```
+
+#### Already in Long Format, and standardizing the Variable Names
+```{r}
+# Cleaning Data
+pc_income <- pc_income %>%
+  mutate(Year = as.numeric(sub("-.*", "", Year))) #Remove everything after -, and then converting year to numeric
+
+# Remove rows where 'Year' is NA (these are additional comment rows in dataset.)
+pc_income <- pc_income %>%
+  filter(!is.na(Year))  # Keeps only rows where 'Year' is not NA
+
+```
+
+
+```{r}
+head(pc_income)
+```
+
+
+#### Unique State Names
+
+```{r}
+unique(pc_income$State)
+```
+### Combining the Three data frames into one Predictor dataframe
+##### But lets correct the state names in the different datasets
+
+
+```{r}
+
+# to substiture using gsub(pattern, replacement, x) (global substitution)
+
+lr_long_data$State <- gsub("Chattisgarh", "Chhattisgarh", lr_long_data$State)
+lr_long_data$State <- gsub("Jammu & Kashmir", "Jammu and Kashmir", lr_long_data$State)
+lr_long_data$State <- gsub("Orissa", "Odisha", lr_long_data$State)
+
+pc_income$State <- gsub("Uttrakhand", "Uttarakhand", pc_income$State)
+unique(pc_income$State)
+
+```
+
+```{r}
+sgr_cp_long_data$Year = as.numeric(sgr_cp_long_data$Year)
+lr_long_data$Year = as.numeric(lr_long_data$Year)
+
+```
+
+```{r}
+pc_income <- pc_income %>%
+  rename(
+    State = `State`,
+    Year = `Year`,
+    Predictor = `Price Category`,
+    Value = `Price (in ₹)`
+  ) %>%
+  select(State, Predictor, Year, Value)  # Ensuring the columns are in the correct order
+
+head(pc_income)
+```
+
+#### Combining all the dataframes
+
+```{r}
+predictor_df <- bind_rows(sgr_cp_long_data, lr_long_data, pc_income)
+
+View(predictor_df)
+#unique(predictor_df$Predictor)
+
+predictor_df$Predictor <- recode(predictor_df$Predictor,
+                                  "current" = "Per Capita Income_Current",
+                                  "constant" = "Per Capita Income_Constant")
+
+```
+
+
+# End of Part to prepare the Dataset for Predictor Variables
+
+# Prepare dataset for Road Accidents (as required for a falsification test)
+
+### Loading and Processing the datasets for Accidents
+
+```{r}
+
+# The below datasets have many different crime data, but my focus point is to gather the data for murders
+
+accidents_01_15 <- read_csv("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Traffic Accidents\\StateUT wise total no of road accidents during 2001-2015.csv")
+
+```
+
+
+```{r}
+head(accidents_01_15)
+```
+
+#### Converting to Long Format
+```{r}
+
+accidents_long <- accidents_01_15 %>%
+  mutate(Crime_Head = "Total Accidents") %>%
+  gather(key="Year", value="Value", -`States/UTs`, -Crime_Head)
+  
+
+str(accidents_long)
+```
+
+Standardizing the State Names
+
+```{r}
+predictor_df <- predictor_df %>%
+  mutate(State = gsub("Chhattisgarh", "Chattisgarh", State)) %>%
+  mutate(State = gsub("A & N ISLANDS", "Andaman and Nicobar Islands", State)) %>%
+  mutate(State = gsub("D & N HAVELI", "Dadra and Nagar Haveli", State)) %>%
+  mutate(State = gsub("DAMAN & DIU", "Daman and Diu", State)) %>%
+  mutate(State = gsub("DELHI (UT)", "Delhi", State)) %>%
+  mutate(State = gsub("Orissa", "Odisha", State)) %>%
+  mutate(State = gsub("TOTAL (ALL INDIA)", "India", State))
+
+# Check the result
+unique(predictor_df$State)
+
+
+```
+
+
+```{r}
+library(writexl)
+write_xlsx(predictor_df, "predictor_data.xlsx")
+
+```
+
+```{r}
+write_xlsx(accidents_long, "accidents_data.xlsx")
+```
+
+
+## End of data processing for Accidents and Predictors Data
+
+
+
+
+
+
+

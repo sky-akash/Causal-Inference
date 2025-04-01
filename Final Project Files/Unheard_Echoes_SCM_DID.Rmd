@@ -1,0 +1,1604 @@
+### "Unheard Echoes to Rising Voices: Understanding the Shift in Crime Reporting"
+
+### "Post-Nirbhaya Case"
+
+*Objective : Estimate the causal effect of the 2012 Nirbhaya Brutal Gang Rape case, which led to an International Uproar about women safety, and a modification in law on crimes against women, by comparing the actual post-2012 trends to a synthetic counterfactuals constructed from other potential predictors, Literacy Rate, Per Capita Income & Prices constant and current).*
+
+*Note: The collected data was not enough to perform the estimates at a actual level due to additional predictor data being missing (not freely available on the website), and also due to different reporting standards through the time.*
+
+[The below study represents the way on how to actually perform the DID estimates using the synthetic control, and falsification tests also.]{.underline}
+
+Author: Akash Mittal ; Matricola ID: 31909A ;Data Science for Economics \| University of Milan, Italy
+
+### Loading the required Libraries
+
+```{r}
+#install.packages(c("Synth", "tidyverse", "readxl"))
+library(Synth) # package for Synthetic Control
+library(tidyverse)
+library(readxl)
+library(glmnet)
+library(dplyr)
+library(ggplot2)
+library(SCtools)
+```
+
+### Loading and Preparing the Data
+
+```{r}
+# Load crimes against women data
+crimes_women <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Master Sheet.xlsx", sheet='Women')
+
+# Load murder data
+murders <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Master Sheet.xlsx", sheet='Murders')
+
+# Load the Estimated Population Data for different states 
+population <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\India_Population_Estiamtes.xlsx")
+
+# Loading the Predictors Dataset
+predictor_df <- read_excel("predictor_data.xlsx")
+
+# Loading the Accidents Dataset
+accidents_long <- read_excel("accidents_data.xlsx")
+
+```
+
+Having a look at the data-sets after loading
+
+```{r}
+# Checking the data structure
+str(crimes_women)
+str(population)
+str(murders)
+str(predictor_df)
+str(accidents_long)
+
+# Below code was used to check the names of States in different datasets, which were later standardized
+#sort(unique(crimes_women$`STATE/UT`))
+#sort(unique(population$`State/UT`))
+#sort(unique(predictor_df$State))
+#sort(unique(accidents_long$`States/UTs`))
+```
+
+Since, the State Names are different in different data-sets, standardizing them to maintain coherence.
+
+```{r}
+# crimes_women & population data-sets have same names (was standardized initially in Excel)
+
+# Difference between the predictor and crime dataset in names - 
+name_mapping <- c(
+  "Andaman and Nicobar Islands" = "A&N Islands",
+  "Chattisgarh" = "Chhattisgarh",
+  "Dadra and Nagar Haveli" = "D&N Haveli",
+  "Daman and Diu" = "Daman & Diu",
+  "Delhi" = "Delhi UT",
+  "Jammu and Kashmir" = "Jammu & Kashmir",
+  "Uttrakhand" = "Uttarakhand"
+)
+
+predictor_df$State <- ifelse(predictor_df$State %in% names(name_mapping),
+                              name_mapping[predictor_df$State], 
+                              predictor_df$State)
+
+# sort(unique(predictor_df$State))
+
+
+# Similarly doing this for accidents_long dataset.
+name_mapping_accidents <- c(
+  "A & N ISLANDS" = "A&N Islands",
+  "D & N HAVELI" = "D&N Haveli",
+  "DAMAN & DIU" = "Daman & Diu",
+  "DELHI (UT)" = "Delhi UT",
+  "TOTAL (ALL INDIA)" = "India")
+
+accidents_long$`States/UTs` <- ifelse(accidents_long$`States/UTs` %in% names(name_mapping_accidents),
+                                      name_mapping_accidents[accidents_long$`States/UTs`], 
+                                      accidents_long$`States/UTs`)
+
+# sort(unique(accidents_long$`States/UTs`))
+
+```
+
+Processing the Population Data (later to use for calculating Crimes per 100,000 people)
+
+```{r}
+population <- population %>%
+  select(!Growth_Rates_percentage)
+
+#summary(population)
+
+# Reshape the population data to long format
+population_long <- population %>%
+  pivot_longer(cols = starts_with("20"),  # Select columns from 2001 to 2015
+               names_to = "Year",          # Name the new column with years
+               values_to = "Population") %>% # Name the new column with population values
+               mutate(Year = as.numeric(Year))
+```
+
+Processing the Crimes Data to merge with Population Data.
+
+```{r}
+# head(crimes_women)
+
+# Reshape the crimes data to long format
+crimes_long <- crimes_women %>%
+  gather(key = "Year", value = "crime_count", -`STATE/UT`, -`CRIME HEAD`) %>%
+  mutate(Year = as.numeric(Year))  # Converting  before joining
+
+crime_merged <- crimes_long %>%
+  left_join(population_long, by = c("STATE/UT" = "State/UT", "Year" = "Year"))
+
+crime_women_100k <- crime_merged %>%
+  mutate(crime_rate_100k = ((crime_count / Population) * 100000)) %>%
+  rename(State = `STATE/UT`, Crime_Head = `CRIME HEAD`, Value = crime_rate_100k) %>%
+  select(-crime_count, -Population)
+
+```
+
+Processing the Murders Data
+
+```{r}
+# View(murders)
+# its the long format as required
+# str(murders)
+murders_merged <- murders %>%
+  left_join(population_long, by = c("STATE" = "State/UT", "YEAR" = "Year")) %>%
+  mutate(year = as.numeric(YEAR)) %>%
+  rename(Murders = Cases) %>%
+  select(-year)
+
+murders_100k <- murders_merged %>%
+  mutate(murders_100k = ((Murders / Population) * 100000)) %>%
+  rename(State = STATE, Year = YEAR) %>%
+  select(-Murders, -Population) %>%
+  mutate(Crime_Head = "MURDERS per 100k") %>%
+  select(State, Crime_Head, Year, Value = murders_100k)
+  
+```
+
+Process Accidents Data 
+
+```{r}
+# Convert accidents to per 100k (FIX ADDED HERE)
+accidents_long <- accidents_long %>%
+  rename(State = `States/UTs`, Crime_Head = Crime_Head) %>% 
+  mutate(Year = as.numeric(Year),
+         Value = as.numeric(Value)) %>%
+  left_join(population_long, by = c("State" = "State/UT", "Year")) %>%
+  mutate(Value = (Value / Population) * 100000) %>%
+  select(-Population)
+```
+
+Combine All Dataset and performing the steps 
+*Now, we combine the Predictors Data and then Accidents Data to this data-set, to have a combined data-frame with all available data, which will be convenient to use with Synth Package.*
+
+*a) Combining the Predictors with the Crimes and Murders Data.*
+*b) Combining the Accidents Data.*
+
+***Data for some predictors is only available 2004 onwards, so I dropped the data prior to 2004 and data after 2015 for analysis.***
+
+***Note: If data for predictors is available for longer time frame, the estimates would be more accurate.***
+
+The Whole Data Set Is Prepared for Final Analysis and next I convert it into Wide Format to be fed into the Synth Package for SCM control generation.
+Before that, I also did some descriptive analysis for different features about Delhi and overall average over other states.
+
+```{r}
+# Combine crimes and murders
+crimes_with_murders <- crime_women_100k %>%
+  bind_rows(murders_100k) %>%
+  rename(Feature = Crime_Head)
+
+# Adding predictors
+
+# Filtering the data for Predictor with SDP_Growth Rate, as data is incomplete for that feature
+predictor_df <- predictor_df %>%
+  filter(Predictor != "SDP_Growth Rate")
+
+crimes_with_murd_prd <- crimes_with_murders %>%
+  bind_rows(predictor_df %>%
+              rename(Feature = Predictor) %>%
+              mutate(Feature = ifelse(is.na(Feature), "Other_Predictors", Feature)
+                     )
+            )
+
+# Accidents data
+accidents_long <- accidents_long %>%
+  rename(Feature = Crime_Head) # Match column name
+
+
+# Add accidents
+df <- bind_rows(crimes_with_murd_prd, accidents_long)
+
+# Filter years and remove unwanted states
+df_filtered <- df %>%
+  filter(Year >= 2004,
+         Year <= 2015,
+         !State %in% c("India", "Telangana"),
+         !is.na(Feature))
+```
+
+
+```{r}
+# Create Wide Format
+df_mod <- df_filtered %>%
+  pivot_wider(names_from = Feature, values_from = Value) %>%
+  mutate(StateID = as.numeric(factor(State)))
+```
+
+
+```{r}
+# Final dataset check
+str(df_mod)
+```
+
+#### Generating the Descriptive Statistics for the pooled data
+
+```{r}
+# Function to create the descriptive summary of the dataset
+
+summarize_feature <- function(df, feature_name) {
+  df %>%
+    summarize(
+      Mean = mean(df[[feature_name]], na.rm = TRUE),
+      Median = median(df[[feature_name]], na.rm = TRUE),
+      Q1 = quantile(df[[feature_name]], 0.25, na.rm = TRUE),
+      Q3 = quantile(df[[feature_name]], 0.75, na.rm = TRUE),
+      Min = min(df[[feature_name]], na.rm = TRUE),
+      Max = max(df[[feature_name]], na.rm = TRUE),
+      SD = sd(df[[feature_name]], na.rm = TRUE),
+      Missing = sum(is.na(df[[feature_name]]))
+    )
+}
+
+```
+
+Descriptive Statistics for Delhi over the years (2004-2015)
+
+```{r}
+df_mod_delhi <- df_mod %>%
+  filter(State == "Delhi UT")
+
+delhi_features <- names(df_mod_delhi)[3:13]
+
+# Generate summaries 
+delhi_summary <- lapply(delhi_features, function(feature) {
+  summary_result <- summarize_feature(df_mod_delhi, feature)
+  summary_result$Feature <- feature  # Add the feature name to the summary result
+  return(summary_result)
+})
+
+delhi_summaries_df <- bind_rows(delhi_summary)
+
+delhi_summaries_df <- delhi_summaries_df %>%
+  select(Feature, everything())
+
+# print(delhi_summaries_df)
+
+
+library(kableExtra)
+library(knitr)
+
+delhi_summaries_df %>%
+  kable("html", caption = "Summary of Features for Delhi 2004-2015", 
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%  # Bold the 'Feature' column
+  add_header_above(c("Feature Summary" = ncol(delhi_summaries_df)))
+
+
+```
+
+Descriptive Statistics for Delhi over the years (2004-2012)
+
+```{r}
+df_mod_delhi_prior <- df_mod_delhi %>%
+  filter(Year <= 2012)
+
+# Generate summaries 
+delhi_summary_prior <- lapply(delhi_features, function(feature) {
+  summary_result <- summarize_feature(df_mod_delhi_prior, feature)
+  summary_result$Feature <- feature  # Add the feature name to the summary result
+  return(summary_result)
+})
+
+delhi_summaries_df_prior <- bind_rows(delhi_summary_prior)
+
+delhi_summaries_df_prior <- delhi_summaries_df_prior %>%
+  select(Feature, everything())
+
+# print(delhi_summaries_df)
+
+delhi_summaries_df_prior %>%
+  kable("html", caption = "Summary of Features for Delhi 2004-2012",
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%  # Bold the 'Feature' column
+  add_header_above(c("Feature Summary" = ncol(delhi_summaries_df_prior)))
+
+
+```
+
+Descriptive Statistics for Delhi over the years (2013-2015)
+
+```{r}
+df_mod_delhi_post <- df_mod_delhi %>%
+  filter(Year >= 2013)
+
+# Generate summaries 
+delhi_summary_post <- lapply(delhi_features, function(feature) {
+  summary_result <- summarize_feature(df_mod_delhi_post, feature)
+  summary_result$Feature <- feature  # Add the feature name to the summary result
+  return(summary_result)
+})
+
+delhi_summaries_df_post <- bind_rows(delhi_summary_post)
+
+delhi_summaries_df_post <- delhi_summaries_df_post %>%
+  select(Feature, everything())
+
+# print(delhi_summaries_df)
+
+delhi_summaries_df_post %>%
+  kable("html", caption = "Summary of Features for Delhi 2013-2015",
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%  # Bold the 'Feature' column
+  add_header_above(c("Feature Summary" = ncol(delhi_summaries_df_post)))
+
+
+```
+
+```{r}
+# Not presented in word due to a long table
+
+# Combine the summaries for all three time frames
+combined_summaries_df <- bind_cols(
+  delhi_summaries_df %>% select(-Feature),
+  delhi_summaries_df_prior %>% select(-Feature),
+  delhi_summaries_df_post %>% select(-Feature)
+)
+
+# Add hierarchical column names
+colnames(combined_summaries_df) <- c(
+  paste0(names(delhi_summaries_df)[-1], " (2004-2015)"),
+  paste0(names(delhi_summaries_df_prior)[-1], " (2004-2012)"),
+  paste0(names(delhi_summaries_df_post)[-1], " (2013-2015)")
+)
+
+# Add the 'Feature' column back
+combined_summaries_df <- bind_cols(
+  data.frame(Feature = delhi_summaries_df$Feature),
+  combined_summaries_df
+)
+
+# View the combined table with hierarchical columns
+combined_summaries_df %>%
+  kable("html", caption = "Summary of Features for Delhi (All time Periods)",
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%  # Bold the 'Feature' column
+  add_header_above(c("Feature Summary" = ncol(combined_summaries_df)))
+```
+
+Descriptive Statistics for Other States over the years (2004-2015)
+
+```{r}
+# Filter the dataset to exclude Delhi
+df_mod_other_states <- df_mod %>%
+  filter(State != "Delhi UT")
+
+# Calculate averages for all features for the other states
+other_states_features <- names(df_mod_other_states)[3:13]
+
+# Generate summaries for the entire period (2004-2015)
+other_states_summary <- lapply(other_states_features, function(feature) {
+  summary_result <- summarize_feature(df_mod_other_states, feature)
+  summary_result$Feature <- feature  # Add the feature name to the summary result
+  return(summary_result)
+})
+
+other_states_summaries_df <- bind_rows(other_states_summary)
+
+other_states_summaries_df <- other_states_summaries_df %>%
+  select(Feature, everything())
+
+# Print the results using kable for better formatting
+other_states_summaries_df %>%
+  kable("html", caption = "Summary of Features for All Other States (2004-2015)",
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%  # Bold the 'Feature' column
+  add_header_above(c("Feature Summary" = ncol(other_states_summaries_df)))
+```
+
+Descriptive Statistics for Other States over the years (2004-2012)
+
+```{r}
+# Filter the dataset to exclude Delhi and consider the years 2004-2011
+df_mod_other_states_prior <- df_mod_other_states %>%
+  filter(Year <= 2012)
+
+# Generate summaries for this period
+other_states_summary_prior <- lapply(other_states_features, function(feature) {
+  summary_result <- summarize_feature(df_mod_other_states_prior, feature)
+  summary_result$Feature <- feature  # Add the feature name to the summary result
+  return(summary_result)
+})
+
+other_states_summaries_df_prior <- bind_rows(other_states_summary_prior)
+
+other_states_summaries_df_prior <- other_states_summaries_df_prior %>%
+  select(Feature, everything())
+
+# Print the results using kable for better formatting
+other_states_summaries_df_prior %>%
+  kable("html", caption = "Summary of Features for All Other States (2004-2012)",
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%  # Bold the 'Feature' column
+  add_header_above(c("Feature Summary" = ncol(other_states_summaries_df_prior)))
+```
+
+Descriptive Statistics for Delhi over the years (2013-2015)
+
+```{r}
+# Filter the dataset to exclude Delhi and consider the years 2013-2015
+df_mod_other_states_post <- df_mod_other_states %>%
+  filter(Year >= 2013)
+
+# Generate summaries for this period
+other_states_summary_post <- lapply(other_states_features, function(feature) {
+  summary_result <- summarize_feature(df_mod_other_states_post, feature)
+  summary_result$Feature <- feature  # Add the feature name to the summary result
+  return(summary_result)
+})
+
+other_states_summaries_df_post <- bind_rows(other_states_summary_post)
+
+other_states_summaries_df_post <- other_states_summaries_df_post %>%
+  select(Feature, everything())
+
+# Print the results using kable for better formatting
+other_states_summaries_df_post %>%
+  kable("html", caption = "Summary of Features for All Other States (2013-2015)",
+        digits = 4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(1, bold = TRUE) %>%  # Bold the 'Feature' column
+  add_header_above(c("Feature Summary" = ncol(other_states_summaries_df_post)))
+```
+
+### Performing the SCM Estimates
+
+```{r}
+# Defining "Delhi UT" as a treated unit and the donor pool as all other states
+treated_unit <- "Delhi UT"
+
+# Define the donor pool (states that are not in NCT)
+donor_pool <- setdiff(unique(df_mod$State), treated_unit)
+#donor_pool
+
+#  str(df_mod)
+
+```
+
+Creating a copy of the data-frame and reordering the columns for readability.
+
+```{r}
+# Reordering the columns for readability
+df_mod_modified <- df_mod %>% select(StateID, State, Year, RAPE, `ASSAULT ON WOMEN WITH INTENT TO OUTRAGE HER MODESTY`,
+                    `Kidnapping & Abduction of Women & Grils`, 
+                    `INSULT TO THE MODESTY OF WOMEN`, 
+                    `Cruelty by Husband or his relatives`,
+                    `MURDERS per 100k`,
+                    `Literacy Growth Rate`,
+                    `Per Capita Income_Current`,
+                    `Per Capita Income_Constant`,
+                    `Total Accidents`
+                    )
+# str(df_mod_modified)
+```
+
+```{r}
+# Converting to dataframe to be used by Synth package
+df_mod_modified_synth <- as.data.frame(df_mod_modified)
+# utils::View(df_mod_modified_synth)
+```
+
+Some states have missing data for predictors, so removing those states too.
+
+```{r}
+# Below code was used to check states wjhich have missing values for the different perdictor varaibles
+# missing_sdp <- df_mod_modified_synth %>%
+#   filter(Year >= 2004 & Year <= 2012) %>%
+#   group_by(State, Year) %>%
+#   summarise(Missing_SDP = sum(is.na(`Per Capita Income_Constant`)))
+# 
+# missing_sdp <- missing_sdp %>%
+#   filter(Missing_SDP > 0)
+# 
+# View(missing_sdp)
+```
+
+```{r}
+# The three states/ UTs have missing values so removing them and also removing the SDP_Growth Rate from the data due to major null values.
+
+states_to_remove <- c("D&N Haveli", "Daman & Diu", "Lakshadweep")
+
+df_mod_modified_synth_filtered <- df_mod_modified_synth %>%
+  filter(!State %in% states_to_remove)
+```
+
+##### Log Transformation of Data
+
+```{r}
+# Applying log transformation to all numeric columns except 'StateID', 'State', 'Year'
+# So final analysis can be done using the % estimation
+
+df_mod_modified_synth_filtered <- df_mod_modified_synth_filtered %>%
+  mutate(across(where(is.numeric) & !any_of(c("StateID", "State", "Year", "Literacy Growth Rate")), ~ log(. + 1)))
+
+# View structure of the transformed data
+str(df_mod_modified_synth_filtered)
+```
+
+
+### XXXX Function Based Modular Approach XXXX
+
+###### Function to Run SCM Analysis
+
+```{r}
+run_scm_analysis <- function(
+    data, 
+    outcome_var, 
+    treatment_id = 10, 
+    predictors = c("Literacy Growth Rate", 
+                   "Per Capita Income_Current",
+                   "Per Capita Income_Constant"),
+    pre_years = 2004:2012,
+    post_years = 2013:2015,
+    unit_var = "StateID",
+    time_var = "Year",
+    unit_names_var = "State",
+    return.placebos = TRUE
+) {
+  
+  # Data preparation
+  dp <- dataprep(
+    foo = data,
+    predictors = predictors,
+    dependent = outcome_var,
+    unit.variable = unit_var,
+    time.variable = time_var,
+    treatment.identifier = treatment_id,
+    controls.identifier = setdiff(unique(data[[unit_var]]), treatment_id),
+    time.predictors.prior = pre_years,
+    time.optimize.ssr = pre_years,
+    unit.names.variable = unit_names_var,
+    time.plot = c(pre_years, post_years)
+  )
+  
+  # Run Synth
+  synth_out <- synth(dp)
+  
+  # Calculate gaps and DID
+  gaps <- dp$Y1plot - (dp$Y0plot %*% synth_out$solution.w)
+  time_indices <- dp$tag$time.plot
+  pre_treatment <- time_indices %in% pre_years
+  post_treatment <- time_indices %in% post_years
+  did <- mean(gaps[post_treatment]) - mean(gaps[pre_treatment])
+  
+  # Generate placebos
+  placebos <- NULL
+  if (return.placebos) {
+    placebos <- generate.placebos(dp, synth_out)
+  }
+  
+  # Return results
+  list(
+    dataprep = dp,
+    synth_out = synth_out,
+    gaps = gaps,
+    did = did,
+    pre_treatment = pre_treatment,
+    post_treatment = post_treatment,
+    placebos = placebos
+  )
+}
+
+```
+
+
+###### Function to Run Placebo Tests (DID + MSPE)
+```{r}
+run_placebo_tests <- function(
+    data, 
+    outcome_var, 
+    treatment_id = 10,
+    predictors = c("Literacy Growth Rate", 
+                   "Per Capita Income_Current",
+                   "Per Capita Income_Constant"),
+    pre_years = 2004:2012,
+    post_years = 2013:2015,
+    unit_var = "StateID",
+    unit_names_var = "State"
+) {
+  
+  controls <- setdiff(unique(data[[unit_var]]), treatment_id)
+  placebo_results <- data.frame(
+    state_id = controls,
+    did = numeric(length(controls)),
+    mspe_ratio = numeric(length(controls))
+  )
+  
+  for (i in seq_along(controls)) {
+    state_id <- controls[i]
+    
+    # Prepare data for placebo unit
+    dp_placebo <- dataprep(
+      foo = data,
+      predictors = predictors,
+      dependent = outcome_var,
+      unit.variable = unit_var,
+      time.variable = "Year",
+      treatment.identifier = state_id,
+      controls.identifier = setdiff(unique(data[[unit_var]]), state_id),
+      time.predictors.prior = pre_years,
+      time.optimize.ssr = pre_years,
+      unit.names.variable = unit_names_var,
+      time.plot = c(pre_years, post_years)
+    )
+    
+    # Run Synth
+    synth_placebo <- synth(dp_placebo)
+    
+    # Calculate gaps and DID
+    gaps_placebo <- dp_placebo$Y1plot - (dp_placebo$Y0plot %*% synth_placebo$solution.w)
+    time_indices <- dp_placebo$tag$time.plot
+    pre <- time_indices %in% pre_years
+    post <- time_indices %in% post_years
+    did_placebo <- mean(gaps_placebo[post]) - mean(gaps_placebo[pre])
+    
+    # Calculate MSPE ratio
+    pre_actual <- dp_placebo$Y1plot[pre]
+    pre_synth <- dp_placebo$Y0plot[pre, ] %*% synth_placebo$solution.w
+    pre_mspe <- mean((pre_actual - pre_synth)^2)
+    
+    post_actual <- dp_placebo$Y1plot[post]
+    post_synth <- dp_placebo$Y0plot[post, ] %*% synth_placebo$solution.w
+    post_mspe <- mean((post_actual - post_synth)^2)
+    mspe_ratio <- post_mspe / pre_mspe
+    
+    # Store results
+    placebo_results$did[i] <- did_placebo
+    placebo_results$mspe_ratio[i] <- mspe_ratio
+  }
+  
+  placebo_results
+}
+
+```
+
+###### Function to Calculate MSPE Ratio
+
+```{r}
+calculate_mspe_ratio <- function(dp, synth_out, pre_treatment, post_treatment) {
+  pre_actual <- dp$Y1plot[pre_treatment]
+  pre_synth <- dp$Y0plot[pre_treatment, ] %*% synth_out$solution.w
+  pre_mspe <- mean((pre_actual - pre_synth)^2)
+  
+  post_actual <- dp$Y1plot[post_treatment]
+  post_synth <- dp$Y0plot[post_treatment, ] %*% synth_out$solution.w
+  post_mspe <- mean((post_actual - post_synth)^2)
+  
+  post_mspe / pre_mspe
+}
+```
+
+##### Analyze Rape Cases
+```{r}
+# Run SCM for Rape
+rape_results <- run_scm_analysis(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "RAPE",
+  return.placebos = TRUE
+)
+
+# Run Placebo Tests for Rape (DID + MSPE)
+placebo_rape <- run_placebo_tests(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "RAPE"
+)
+
+# Calculate MSPE Ratio for Delhi (Rape)
+mspe_rape <- calculate_mspe_ratio(
+  dp = rape_results$dataprep,
+  synth_out = rape_results$synth_out,
+  pre_treatment = rape_results$pre_treatment,
+  post_treatment = rape_results$post_treatment
+)
+
+# Calculate p-values
+p_did_rape <- mean(placebo_rape$did >= rape_results$did)
+p_mspe_rape <- mean(placebo_rape$mspe_ratio >= mspe_rape)
+
+cat("Rape Analysis:\n",
+    "DID Estimate:", rape_results$did, "\n",
+    "DID p-value:", p_did_rape, "\n",
+    "MSPE Ratio:", mspe_rape, "\n",
+    "MSPE p-value:", p_mspe_rape)
+```
+
+##### Analyze Molestation & Assault Cases
+```{r}
+# Run SCM for Assault
+assault_results <- run_scm_analysis(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "ASSAULT ON WOMEN WITH INTENT TO OUTRAGE HER MODESTY",
+  return.placebos = TRUE
+)
+
+# Run Placebo Tests for Assault (DID + MSPE)
+placebo_assault <- run_placebo_tests(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "ASSAULT ON WOMEN WITH INTENT TO OUTRAGE HER MODESTY"
+)
+
+# Calculate MSPE Ratio for Delhi (Assault)
+mspe_assault <- calculate_mspe_ratio(
+  dp = assault_results$dataprep,
+  synth_out = assault_results$synth_out,
+  pre_treatment = assault_results$pre_treatment,
+  post_treatment = assault_results$post_treatment
+)
+
+# Calculate p-values
+p_did_assault <- mean(placebo_assault$did >= assault_results$did)
+p_mspe_assault <- mean(placebo_assault$mspe_ratio >= mspe_assault)
+
+cat("Assault Analysis:\n",
+    "DID Estimate:", assault_results$did, "\n",
+    "DID p-value:", p_did_assault, "\n",
+    "MSPE Ratio:", mspe_assault, "\n",
+    "MSPE p-value:", p_mspe_assault)
+```
+
+##### Plotting Functions and Plots
+
+###### Function
+```{r}
+###### Histogram for MSPE Ratios
+
+plot_path <- function(dp, synth_out, ylab, title) {
+  path.plot(
+    synth.res = synth_out,
+    dataprep.res = dp,
+    Xlab = "Year",
+    Ylab = ylab,
+    Main = title,
+    Legend = c("Treated", "Synthetic"),
+    Legend.position = "topright",
+    tr.intake = 2012
+  )
+}
+
+plot_placebo_hist <- function(placebo_did, did_actual, xlab, title) {
+  hist(placebo_did,
+       main = title,
+       xlab = xlab,
+       col = "lightblue", 
+       breaks = 30,
+       border = "black",
+       ylim = c(0, 8),
+       xlim = range(c(placebo_did, did_actual)))
+  abline(v = did_actual, col = "red", lwd = 4, lty = 3)
+  legend("topright", 
+         legend = c("Placebo DID", "Actual DID (Delhi)"), 
+         col = c("lightblue", "red"), 
+         lwd = c(10, 2))
+}
+
+plot_mspe_hist <- function(placebo_ratios, treated_ratio, xlab, title, xlim = NULL
+) {
+  hist(placebo_ratios,
+       main = title,
+       xlab = xlab,
+       col = "gray",
+       breaks = 50,
+       border = "black",
+       xlim = xlim  # Pass xlim to hist()
+  )
+  abline(v = treated_ratio, col = "red", lwd = 2)
+  legend("topright", 
+         legend = c("Placebos", "Delhi"), 
+         col = c("gray", "red"), 
+         lwd = 2)
+}
+
+# Function to plot gaps between treated and synthetic control
+plot_gaps <- function(synth.res, dataprep.res, ylab, title) {
+  gaps.plot(
+    synth.res = synth.res,
+    dataprep.res = dataprep.res,
+    Ylab = ylab,
+    Xlab = "Year",
+    Main = title,
+    tr.intake = 2012  # Treatment year
+  )
+}
+
+```
+
+###### Plots
+
+```{r}
+# For Rape cases
+plot_path(
+  dp = rape_results$dataprep,
+  synth_out = rape_results$synth_out,
+  ylab = "Reported Rapes",
+  title = "Path Plot: Reported Rapes"
+)
+
+plot_gaps(
+  synth.res = rape_results$synth_out,
+  dataprep.res = rape_results$dataprep,
+  ylab = "Gap in Rapes Reported",
+  title = "Gap Plot: Rapes (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = placebo_rape$did,
+  did_actual = rape_results$did,
+  xlab = "DID Estimate (Rapes)",
+  title = "Placebo DID: Rapes"
+)
+
+plot_mspe_hist(
+  placebo_ratios = placebo_rape$mspe_ratio,
+  treated_ratio = mspe_rape,
+  xlab = "MSPE Ratio (Rapes)",
+  title = "MSPE Ratio Test: Rapes",
+  xlim = c(0,60)
+)
+# Plotting Placebos
+plot_placebos(rape_results$placebos)
+
+# For Assault Cases
+plot_path(
+  dp = assault_results$dataprep,
+  synth_out = assault_results$synth_out,
+  ylab = "Reported Assaults",
+  title = "Path Plot: Reported Assaults"
+)
+
+plot_gaps(
+  synth.res = assault_results$synth_out,
+  dataprep.res = assault_results$dataprep,
+  ylab = "Gap in Assaults Reported",
+  title = "Gap Plot: Assaults (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = placebo_assault$did,
+  did_actual = assault_results$did,
+  xlab = "DID Estimate (Assaults)",
+  title = "Placebo DID: Assaults"
+)
+
+plot_mspe_hist(
+  placebo_ratios = placebo_assault$mspe_ratio,
+  treated_ratio = mspe_assault,
+  xlab = "MSPE Ratio (Assaults)",
+  title = "MSPE Ratio Test: Assaults",
+  xlim = c(0,35)
+)
+
+# Plotting Placebos
+plot_placebos(assault_results$placebos)
+```
+
+
+##### Analyze Insult Cases
+```{r}
+# Run SCM for Insult
+insult_results <- run_scm_analysis(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "INSULT TO THE MODESTY OF WOMEN",
+  return.placebos = TRUE
+)
+
+# Run Placebo Tests for INSULT (DID + MSPE)
+placebo_insult <- run_placebo_tests(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "INSULT TO THE MODESTY OF WOMEN"
+)
+
+# Calculate MSPE Ratio for Delhi (INSULT)
+mspe_insult <- calculate_mspe_ratio(
+  dp = insult_results$dataprep,
+  synth_out = insult_results$synth_out,
+  pre_treatment = insult_results$pre_treatment,
+  post_treatment = insult_results$post_treatment
+)
+
+# Calculate p-values
+p_did_insult <- mean(placebo_insult$did >= insult_results$did)
+p_mspe_insult <- mean(placebo_insult$mspe_ratio >= mspe_insult)
+
+cat("Insult to Modesty of Women Analysis:\n",
+    "DID Estimate:", insult_results$did, "\n",
+    "DID p-value:", p_did_insult, "\n",
+    "MSPE Ratio:", mspe_insult, "\n",
+    "MSPE p-value:", p_mspe_insult)
+```
+
+
+###### Plots
+
+```{r}
+# For Insult to Modesty of Women
+plot_path(
+  dp = insult_results$dataprep,
+  synth_out = insult_results$synth_out,
+  ylab = "Reported Insult to Modesty of Women Cases",
+  title = "Path Plot: Reported Insult Cases"
+)
+
+plot_gaps(
+  synth.res = insult_results$synth_out,
+  dataprep.res = insult_results$dataprep,
+  ylab = "Gap in Reported Insult Cases",
+  title = "Gap Plot: Reported Insult Cases (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = placebo_insult$did,
+  did_actual = insult_results$did,
+  xlab = "DID Estimate (Reported Insult Cases)",
+  title = "Placebo DID: Reported Insult Cases"
+)
+
+plot_mspe_hist(
+  placebo_ratios = placebo_insult$mspe_ratio,
+  treated_ratio = mspe_insult,
+  xlab = "MSPE Ratio (Reported Insult Cases)",
+  title = "MSPE Ratio Test: Reported Insult Cases",
+  xlim = c(0,50)
+)
+
+# Plotting Placebos
+plot_placebos(insult_results$placebos)
+```
+
+### Falsification Tests on Accidents and Murders
+
+##### Analyze Accident Cases
+```{r}
+# Run SCM for Total Accidents
+accident_results <- run_scm_analysis(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "Total Accidents",
+  return.placebos = TRUE
+)
+
+# Run Placebo Tests for Accident (DID + MSPE)
+placebo_accident <- run_placebo_tests(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "Total Accidents"
+)
+
+# Calculate MSPE Ratio for Delhi (accident)
+mspe_accident <- calculate_mspe_ratio(
+  dp = accident_results$dataprep,
+  synth_out = accident_results$synth_out,
+  pre_treatment = accident_results$pre_treatment,
+  post_treatment = accident_results$post_treatment
+)
+
+# Calculate p-values
+p_did_accident <- mean(placebo_accident$did >= accident_results$did)
+p_mspe_accident <- mean(placebo_accident$mspe_ratio >= mspe_accident)
+
+cat("Total Accident Analysis:\n",
+    "DID Estimate:", accident_results$did, "\n",
+    "DID p-value:", p_did_accident, "\n",
+    "MSPE Ratio:", mspe_accident, "\n",
+    "MSPE p-value:", p_mspe_accident)
+```
+
+
+###### Plots
+
+```{r}
+
+# For Accident Cases
+plot_path(
+  dp = accident_results$dataprep,
+  synth_out = accident_results$synth_out,
+  ylab = "Reported Accident Cases",
+  title = "Path Plot: Reported Accident Cases"
+)
+
+plot_gaps(
+  synth.res = accident_results$synth_out,
+  dataprep.res = accident_results$dataprep,
+  ylab = "Gap in Reported Accident Cases",
+  title = "Gap Plot: Reported Accident Cases (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = placebo_accident$did,
+  did_actual = accident_results$did,
+  xlab = "DID Estimate (Reported Accident Cases)",
+  title = "Placebo DID: Reported Accident Cases"
+)
+
+plot_mspe_hist(
+  placebo_ratios = placebo_accident$mspe_ratio,
+  treated_ratio = mspe_accident,
+  xlab = "MSPE Ratio (Reported Accident Cases)",
+  title = "MSPE Ratio Test: Reported Accident Cases",
+  xlim = c(0,20)
+)
+
+# Plotting Placebos
+plot_placebos(accident_results$placebos)
+
+```
+
+##### Analyze Murder Cases
+
+```{r}
+# Run SCM for MURDERS per 100k
+murder_results <- run_scm_analysis(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "MURDERS per 100k",
+  return.placebos = TRUE
+)
+
+# Run Placebo Tests for MURDERS per 100k (DID + MSPE)
+placebo_murder <- run_placebo_tests(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "MURDERS per 100k"
+)
+
+# Calculate MSPE Ratio for Delhi (murder)
+mspe_murder <- calculate_mspe_ratio(
+  dp = murder_results$dataprep,
+  synth_out = murder_results$synth_out,
+  pre_treatment = murder_results$pre_treatment,
+  post_treatment = murder_results$post_treatment
+)
+
+# Calculate p-values
+p_did_murder <- mean(placebo_murder$did >= murder_results$did)
+p_mspe_murder <- mean(placebo_murder$mspe_ratio >= mspe_murder)
+
+cat("Murder Analysis:\n",
+    "DID Estimate:", murder_results$did, "\n",
+    "DID p-value:", p_did_murder, "\n",
+    "MSPE Ratio:", mspe_murder, "\n",
+    "MSPE p-value:", p_mspe_murder)
+
+```
+
+
+###### Plots
+
+```{r}
+
+# For Murder Cases
+plot_path(
+  dp = murder_results$dataprep,
+  synth_out = murder_results$synth_out,
+  ylab = "Reported Murder Cases",
+  title = "Path Plot: Reported murder Cases"
+)
+
+plot_gaps(
+  synth.res = murder_results$synth_out,
+  dataprep.res = murder_results$dataprep,
+  ylab = "Gap in Reported Murder Cases",
+  title = "Gap Plot: Reported Murder Cases (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = placebo_murder$did,
+  did_actual = murder_results$did,
+  xlab = "DID Estimate (Reported Murder Cases)",
+  title = "Placebo DID: Reported Murder Cases"
+)
+
+plot_mspe_hist(
+  placebo_ratios = placebo_murder$mspe_ratio,
+  treated_ratio = mspe_murder,
+  xlab = "MSPE Ratio (Reported Murder Cases)",
+  title = "MSPE Ratio Test: Reported Murder Cases",
+  xlim = c(0,10)
+)
+
+# Plotting Placebos
+plot_placebos(murder_results$placebos)
+```
+
+
+#### XXXX End of Analysis. XXXX
+
+
+## XXXX Fake time Treatment Check XXXX ##
+For Fake Treatment in year 2008, so pretreatment time period is 2004-2008, and post treatment period is 2009-2012.
+#### Function to Run SCM Analysis
+
+```{r}
+run_scm_analysis_f <- function(
+    data, 
+    outcome_var, 
+    treatment_id = 10, 
+    predictors = c("Literacy Growth Rate", 
+                   "Per Capita Income_Current",
+                   "Per Capita Income_Constant"),
+    pre_years = 2004:2008,
+    post_years = 2009:2012,
+    unit_var = "StateID",
+    time_var = "Year",
+    unit_names_var = "State"
+) {
+  
+  # Data preparation
+  dp <- dataprep(
+    foo = data,
+    predictors = predictors,
+    dependent = outcome_var,
+    unit.variable = unit_var,
+    time.variable = time_var,
+    treatment.identifier = treatment_id,
+    controls.identifier = setdiff(unique(data[[unit_var]]), treatment_id),
+    time.predictors.prior = pre_years,
+    time.optimize.ssr = pre_years,
+    unit.names.variable = unit_names_var,
+    time.plot = c(pre_years, post_years)
+  )
+  
+  # Run Synth
+  synth_out <- synth(dp)
+  
+  # Calculate gaps and DID
+  gaps <- dp$Y1plot - (dp$Y0plot %*% synth_out$solution.w)
+  time_indices <- dp$tag$time.plot
+  pre_treatment <- time_indices %in% pre_years
+  post_treatment <- time_indices %in% post_years
+  did <- mean(gaps[post_treatment]) - mean(gaps[pre_treatment])
+  
+  # Return results
+  list(
+    dataprep = dp,
+    synth_out = synth_out,
+    gaps = gaps,
+    did = did,
+    pre_treatment = pre_treatment,
+    post_treatment = post_treatment
+  )
+}
+
+```
+
+
+#### Function to Run Placebo Tests (DID + MSPE)
+```{r}
+run_placebo_tests_f <- function(
+    data, 
+    outcome_var, 
+    treatment_id = 10,
+    predictors = c("Literacy Growth Rate", 
+                   "Per Capita Income_Current",
+                   "Per Capita Income_Constant"),
+    pre_years = 2004:2008,
+    post_years = 2009:2012,
+    unit_var = "StateID",
+    unit_names_var = "State"
+) {
+  
+  controls <- setdiff(unique(data[[unit_var]]), treatment_id)
+  placebo_results <- data.frame(
+    state_id = controls,
+    did = numeric(length(controls)),
+    mspe_ratio = numeric(length(controls))
+  )
+  
+  for (i in seq_along(controls)) {
+    state_id <- controls[i]
+    
+    # Prepare data for placebo unit
+    dp_placebo <- dataprep(
+      foo = data,
+      predictors = predictors,
+      dependent = outcome_var,
+      unit.variable = unit_var,
+      time.variable = "Year",
+      treatment.identifier = state_id,
+      controls.identifier = setdiff(unique(data[[unit_var]]), state_id),
+      time.predictors.prior = pre_years,
+      time.optimize.ssr = pre_years,
+      unit.names.variable = unit_names_var,
+      time.plot = c(pre_years, post_years)
+    )
+    
+    # Run Synth
+    synth_placebo <- synth(dp_placebo)
+    
+    # Calculate gaps and DID
+    gaps_placebo <- dp_placebo$Y1plot - (dp_placebo$Y0plot %*% synth_placebo$solution.w)
+    time_indices <- dp_placebo$tag$time.plot
+    pre <- time_indices %in% pre_years
+    post <- time_indices %in% post_years
+    did_placebo <- mean(gaps_placebo[post]) - mean(gaps_placebo[pre])
+    
+    # Calculate MSPE ratio
+    pre_actual <- dp_placebo$Y1plot[pre]
+    pre_synth <- dp_placebo$Y0plot[pre, ] %*% synth_placebo$solution.w
+    pre_mspe <- mean((pre_actual - pre_synth)^2)
+    
+    post_actual <- dp_placebo$Y1plot[post]
+    post_synth <- dp_placebo$Y0plot[post, ] %*% synth_placebo$solution.w
+    post_mspe <- mean((post_actual - post_synth)^2)
+    mspe_ratio <- post_mspe / pre_mspe
+    
+    # Store results
+    placebo_results$did[i] <- did_placebo
+    placebo_results$mspe_ratio[i] <- mspe_ratio
+  }
+  
+  placebo_results
+}
+
+```
+
+#### Estimates for Rapes
+
+```{r}
+# Run SCM for Rape
+f_rape_results <- run_scm_analysis_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "RAPE"
+)
+
+# Run Placebo Tests for Rape (DID + MSPE)
+f_placebo_rape <- run_placebo_tests_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "RAPE"
+)
+
+# Calculate MSPE Ratio for Delhi (Rape)
+f_mspe_rape <- calculate_mspe_ratio(
+  dp = f_rape_results$dataprep,
+  synth_out = f_rape_results$synth_out,
+  pre_treatment = f_rape_results$pre_treatment,
+  post_treatment = f_rape_results$post_treatment
+)
+
+# Calculate p-values
+f_p_did_rape <- mean(f_placebo_rape$did >= f_rape_results$did)
+f_p_mspe_rape <- mean(f_placebo_rape$mspe_ratio >= f_mspe_rape)
+
+cat("Rape Analysis:\n",
+    "DID Estimate:", f_rape_results$did, "\n",
+    "DID p-value:", f_p_did_rape, "\n",
+    "MSPE Ratio:", f_mspe_rape, "\n",
+    "MSPE p-value:", f_p_mspe_rape)
+```
+
+##### Plots for Reported Rapes
+
+```{r}
+# For Rape cases
+plot_path(
+  dp = f_rape_results$dataprep,
+  synth_out = f_rape_results$synth_out,
+  ylab = "Reported Rapes",
+  title = "Path Plot: Reported Rapes"
+)
+
+plot_gaps(
+  synth.res = f_rape_results$synth_out,
+  dataprep.res = f_rape_results$dataprep,
+  ylab = "Gap in Rapes Reported",
+  title = "Gap Plot: Rapes (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = f_placebo_rape$did,
+  did_actual = f_rape_results$did,
+  xlab = "DID Estimate (Rapes)",
+  title = "Placebo DID: Rapes"
+)
+
+plot_mspe_hist(
+  placebo_ratios = f_placebo_rape$mspe_ratio,
+  treated_ratio = f_mspe_rape,
+  xlab = "MSPE Ratio (Rapes)",
+  title = "MSPE Ratio Test: Rapes",
+  xlim = c(0,10)
+)
+```
+
+#### Estimates for Molestation & Assault Cases
+```{r}
+# Run SCM for Assault
+f_assault_results <- run_scm_analysis_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "ASSAULT ON WOMEN WITH INTENT TO OUTRAGE HER MODESTY"
+)
+
+# Run Placebo Tests for Assault (DID + MSPE)
+f_placebo_assault <- run_placebo_tests_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "ASSAULT ON WOMEN WITH INTENT TO OUTRAGE HER MODESTY"
+)
+
+# Calculate MSPE Ratio for Delhi (Assault)
+f_mspe_assault <- calculate_mspe_ratio(
+  dp = f_assault_results$dataprep,
+  synth_out = f_assault_results$synth_out,
+  pre_treatment = f_assault_results$pre_treatment,
+  post_treatment = f_assault_results$post_treatment
+)
+
+# Calculate p-values
+f_p_did_assault <- mean(f_placebo_assault$did >= f_assault_results$did)
+f_p_mspe_assault <- mean(f_placebo_assault$mspe_ratio >= f_mspe_assault)
+
+cat("Assault Analysis:\n",
+    "DID Estimate:", f_assault_results$did, "\n",
+    "DID p-value:", f_p_did_assault, "\n",
+    "MSPE Ratio:", f_mspe_assault, "\n",
+    "MSPE p-value:", f_p_mspe_assault)
+```
+
+##### Plots for Assault
+
+```{r}
+# For Assault Cases
+plot_path(
+  dp = f_assault_results$dataprep,
+  synth_out = f_assault_results$synth_out,
+  ylab = "Reported Assaults",
+  title = "Path Plot: Reported Assaults"
+)
+
+plot_gaps(
+  synth.res = f_assault_results$synth_out,
+  dataprep.res = f_assault_results$dataprep,
+  ylab = "Gap in Assaults Reported",
+  title = "Gap Plot: Assaults (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = f_placebo_assault$did,
+  did_actual = f_assault_results$did,
+  xlab = "DID Estimate (Assaults)",
+  title = "Placebo DID: Assaults"
+)
+
+plot_mspe_hist(
+  placebo_ratios = f_placebo_assault$mspe_ratio,
+  treated_ratio = f_mspe_assault,
+  xlab = "MSPE Ratio (Assaults)",
+  title = "MSPE Ratio Test: Assaults",
+  xlim = c(0,60)
+)
+```
+
+
+#### Estimates for Insult (As Insult came out to be highlight significant)
+
+```{r}
+# Run SCM for Insult
+f_insult_results <- run_scm_analysis_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "INSULT TO THE MODESTY OF WOMEN"
+)
+
+# Run Placebo Tests for INSULT (DID + MSPE)
+f_placebo_insult <- run_placebo_tests_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "INSULT TO THE MODESTY OF WOMEN"
+)
+
+# Calculate MSPE Ratio for Delhi (INSULT)
+f_mspe_insult <- calculate_mspe_ratio(
+  dp = f_insult_results$dataprep,
+  synth_out = f_insult_results$synth_out,
+  pre_treatment = f_insult_results$pre_treatment,
+  post_treatment = f_insult_results$post_treatment
+)
+
+# Calculate p-values
+f_p_did_insult <- mean(f_placebo_insult$did >= f_insult_results$did)
+f_p_mspe_insult <- mean(f_placebo_insult$mspe_ratio >= f_mspe_insult)
+
+cat("Insult to Modesty of Women Analysis:\n",
+    "DID Estimate:", f_insult_results$did, "\n",
+    "DID p-value:", f_p_did_insult, "\n",
+    "MSPE Ratio:", f_mspe_insult, "\n",
+    "MSPE p-value:", f_p_mspe_insult)
+```
+
+##### Plots for Insult
+
+```{r}
+# For Insult to Modesty of Women
+plot_path(
+  dp = f_insult_results$dataprep,
+  synth_out = f_insult_results$synth_out,
+  ylab = "Reported Insult to Modesty of Women Cases",
+  title = "Path Plot: Reported Insult Cases"
+)
+
+plot_gaps(
+  synth.res = f_insult_results$synth_out,
+  dataprep.res = f_insult_results$dataprep,
+  ylab = "Gap in Reported Insult Cases",
+  title = "Gap Plot: Reported Insult Cases (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = f_placebo_insult$did,
+  did_actual = f_insult_results$did,
+  xlab = "DID Estimate (Reported Insult Cases)",
+  title = "Placebo DID: Reported Insult Cases"
+)
+
+plot_mspe_hist(
+  placebo_ratios = f_placebo_insult$mspe_ratio,
+  treated_ratio = f_mspe_insult,
+  xlab = "MSPE Ratio (Reported Insult Cases)",
+  title = "MSPE Ratio Test: Reported Insult Cases",
+  xlim = c(0,50)
+)
+```
+
+#### Estimates for Accidents (as Falsification Test)
+
+```{r}
+# Run SCM for Total Accidents
+f_accident_results <- run_scm_analysis_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "Total Accidents"
+)
+
+# Run Placebo Tests for Accident (DID + MSPE)
+f_placebo_accident <- run_placebo_tests_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "Total Accidents"
+)
+
+# Calculate MSPE Ratio for Delhi (accident)
+f_mspe_accident <- calculate_mspe_ratio(
+  dp = f_accident_results$dataprep,
+  synth_out = f_accident_results$synth_out,
+  pre_treatment = f_accident_results$pre_treatment,
+  post_treatment = f_accident_results$post_treatment
+)
+
+# Calculate p-values
+f_p_did_accident <- mean(f_placebo_accident$did >= f_accident_results$did)
+f_p_mspe_accident <- mean(f_placebo_accident$mspe_ratio >= f_mspe_accident)
+
+cat("Total Accident Analysis:\n",
+    "DID Estimate:", f_accident_results$did, "\n",
+    "DID p-value:", f_p_did_accident, "\n",
+    "MSPE Ratio:", f_mspe_accident, "\n",
+    "MSPE p-value:", f_p_mspe_accident)
+```
+
+##### Plots for Accidents
+
+```{r}
+
+# For Accident Cases
+plot_path(
+  dp = f_accident_results$dataprep,
+  synth_out = f_accident_results$synth_out,
+  ylab = "Reported Accident Cases",
+  title = "Path Plot: Reported Accident Cases"
+)
+
+plot_gaps(
+  synth.res = f_accident_results$synth_out,
+  dataprep.res = f_accident_results$dataprep,
+  ylab = "Gap in Reported Accident Cases",
+  title = "Gap Plot: Reported Accident Cases (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = f_placebo_accident$did,
+  did_actual = f_accident_results$did,
+  xlab = "DID Estimate (Reported Accident Cases)",
+  title = "Placebo DID: Reported Accident Cases"
+)
+
+plot_mspe_hist(
+  placebo_ratios = f_placebo_accident$mspe_ratio,
+  treated_ratio = f_mspe_accident,
+  xlab = "MSPE Ratio (Reported Accident Cases)",
+  title = "MSPE Ratio Test: Reported Accident Cases",
+  xlim = c(0,20)
+)
+
+```
+
+#### Estimates for Murder Cases
+
+```{r}
+# Run SCM for MURDERS per 100k
+f_murder_results <- run_scm_analysis_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "MURDERS per 100k"
+)
+
+# Run Placebo Tests for MURDERS per 100k (DID + MSPE)
+f_placebo_murder <- run_placebo_tests_f(
+  data = df_mod_modified_synth_filtered,
+  outcome_var = "MURDERS per 100k"
+)
+
+# Calculate MSPE Ratio for Delhi (murder)
+f_mspe_murder <- calculate_mspe_ratio(
+  dp = f_murder_results$dataprep,
+  synth_out = f_murder_results$synth_out,
+  pre_treatment = f_murder_results$pre_treatment,
+  post_treatment = f_murder_results$post_treatment
+)
+
+# Calculate p-values
+f_p_did_murder <- mean(f_placebo_murder$did >= f_murder_results$did)
+f_p_mspe_murder <- mean(f_placebo_murder$mspe_ratio >= f_mspe_murder)
+
+cat("Murder Analysis:\n",
+    "DID Estimate:", f_murder_results$did, "\n",
+    "DID p-value:", f_p_did_murder, "\n",
+    "MSPE Ratio:", f_mspe_murder, "\n",
+    "MSPE p-value:", f_p_mspe_murder)
+
+```
+
+
+#####  Plots for Murders
+
+```{r}
+
+# For Murder Cases
+plot_path(
+  dp = f_murder_results$dataprep,
+  synth_out = f_murder_results$synth_out,
+  ylab = "Reported Murder Cases",
+  title = "Path Plot: Reported murder Cases"
+)
+
+plot_gaps(
+  synth.res = f_murder_results$synth_out,
+  dataprep.res = f_murder_results$dataprep,
+  ylab = "Gap in Reported Murder Cases",
+  title = "Gap Plot: Reported Murder Cases (Treated - Synthetic)"
+)
+
+plot_placebo_hist(
+  placebo_did = f_placebo_murder$did,
+  did_actual = f_murder_results$did,
+  xlab = "DID Estimate (Reported Murder Cases)",
+  title = "Placebo DID: Reported Murder Cases"
+)
+
+plot_mspe_hist(
+  placebo_ratios = f_placebo_murder$mspe_ratio,
+  treated_ratio = f_mspe_murder,
+  xlab = "MSPE Ratio (Reported Murder Cases)",
+  title = "MSPE Ratio Test: Reported Murder Cases",
+  xlim = c(0,10)
+)
+```
+
+## XXXX End of Fake time Treatment Check XXXX ##
+
+### XXXX End of Complete Analysis XXXX
+
