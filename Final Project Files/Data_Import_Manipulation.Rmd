@@ -1,31 +1,56 @@
-# Loading the Data and Preprocessing the tables for SCM Predictors.
+The Below code part is for loading and combining the predictor dataset.
+
+#### Loading the Data and Preprocessing the tables for SCM Predictors.
 
 ```{r}
 # Loading the required libraries.
+# Note: The libraries are not installed in the R environment, so they need to be installed first.
+# install.packages("tidyverse")
+# install.packages("readxl")
+# install.packages("dplyr")
+# install.packages("readr")
+# install.packages("writexl")
+
 library(tidyverse)
 library(readxl)
 library(dplyr)
 library(ggplot2)
 library(readr)
+library(writexl)
 
 ```
 
+##### Predictor Datasets 
 
-# Predictor Datasets 
 ```{r}
-sgr_cp_97_16 <- read_csv("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Growth Rates 2001-2014\\State UTs wise Growth Rate - GSDP % (Constant Prices) from 1997-98 to 2015-2016.csv") # data for State UT's Growth Rate 
+# data for State UT's Growth Rate 
+# Change working directory to the location of the files
+# New Location -> inside a folder in the project directory
 
-lr_01_15 <- read_csv("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Literacy Rates\\StateUTs-wise Literacy Rates as per Census 2001 and 2011.csv") # data for Literacy Rate
 
-pc_income <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Per_Capita Income\\Per_Capita_Income_2004-2020.xlsx") # data for Per Capita Income
+# Get current Working Directory
+cwd <- getwd()
+# Change cwd to folder "Final Project Files" inside the project directory
+# Uncomment the following line if your cwd is not the same as in main folder of these data files.
+# If the main working directory is the previous folder, uncommenting the below line will resolve any issue.
+# setwd(paste0(cwd, "/Final Project Files/"))
+
+sgr_cp_97_16 <- read.csv("State UTs wise Growth Rate - GSDP % (Constant Prices) from 1997-98 to 2015-2016.csv")
+
+# data for Literacy Rate
+lr_01_15 <- read_csv("StateUTs-wise Literacy Rates as per Census 2001 and 2011.csv") 
+
+# data for Per Capita Income
+pc_income <- read_excel("Per_Capita_Income_2004-2020.xlsx") 
 
 ```
 
-### Processing data for State Domenstic Growth Rates
-#### Cleaning the Data
+#### Processing data for State Domenstic Growth Rates
+
+##### Cleaning the Data
 
 ```{r}
-years <- paste0(1997:2016)
+years <- paste0(1997:2015)
 
 # Combine with the "State" column
 colnames(sgr_cp_97_16) <- c("State", years)
@@ -33,7 +58,8 @@ colnames(sgr_cp_97_16) <- c("State", years)
 
 ```
 
-#### Converting to Long Format
+##### Converting to Long Format
+
 ```{r}
 
 sgr_cp_long_data <- sgr_cp_97_16 %>%
@@ -45,21 +71,23 @@ sgr_cp_long_data <- sgr_cp_97_16 %>%
 
 ```
 
-#### Unique State Names
+##### Unique State Names
+
 ```{r}
 # Unique Names of States used for Standardization
 unique(sgr_cp_long_data$State)
 ```
 
-### Processing data for Literacy Rate (the rates from census were available for 2001 and 2011, for the remaining years, the rates have been estimated)
-#### Cleaning the data
+#### Processing data for Literacy Rate (the rates from census were available for 2001 and 2011, for the remaining years, the rates have been estimated)
+
+##### Cleaning the data
 
 ```{r}
-View(lr_01_15)
-str(lr_01_15)
+# View(lr_01_15)
+# str(lr_01_15)
 ```
 
-#### converting to the Long Format
+##### Converting to the Long Format
 
 ```{r}
 lr_long_data <- lr_01_15 %>%
@@ -70,22 +98,24 @@ lr_long_data <- lr_01_15 %>%
 colnames(lr_long_data) <- c("State", "Predictor", "Year", "Value")
 ```
 
-#### Unique State Names
+##### Unique State Names
 
 ```{r}
 unique(lr_long_data$State)
 ```
 
-### Processing the data for Per-Capita Income
+#### Processing the data for Per-Capita Income
+
 Note: Data is available from 2004 onwards only.
 
 ```{r}
 
-View(pc_income)
+# View(pc_income)
 head(pc_income)
 ```
 
-#### Already in Long Format, and standardizing the Variable Names
+##### Already in Long Format, and standardizing the Variable Names
+
 ```{r}
 # Cleaning Data
 pc_income <- pc_income %>%
@@ -97,20 +127,19 @@ pc_income <- pc_income %>%
 
 ```
 
-
 ```{r}
 head(pc_income)
 ```
 
-
-#### Unique State Names
+##### Unique State Names
 
 ```{r}
 unique(pc_income$State)
 ```
-### Combining the Three data frames into one Predictor dataframe
-##### But lets correct the state names in the different datasets
 
+#### Combining the Three data frames into one Predictor dataframe
+
+##### But let's correct the state names in the different datasets
 
 ```{r}
 
@@ -144,7 +173,7 @@ pc_income <- pc_income %>%
 head(pc_income)
 ```
 
-#### Combining all the dataframes
+##### Combining all the dataframes
 
 ```{r}
 predictor_df <- bind_rows(sgr_cp_long_data, lr_long_data, pc_income)
@@ -158,27 +187,26 @@ predictor_df$Predictor <- recode(predictor_df$Predictor,
 
 ```
 
+#### End of Part to prepare the Dataset for Predictor Variables
 
-# End of Part to prepare the Dataset for Predictor Variables
+#### Prepare dataset for Road Accidents (as required for a falsification test)
 
-# Prepare dataset for Road Accidents (as required for a falsification test)
-
-### Loading and Processing the datasets for Accidents
+##### Loading and Processing the datasets for Accidents
 
 ```{r}
 
 # The below datasets have many different crime data, but my focus point is to gather the data for murders
 
-accidents_01_15 <- read_csv("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Additional DataSets\\Traffic Accidents\\StateUT wise total no of road accidents during 2001-2015.csv")
+accidents_01_15 <- read_csv("StateUT wise total no of road accidents during 2001-2015.csv")
 
 ```
-
 
 ```{r}
 head(accidents_01_15)
 ```
 
-#### Converting to Long Format
+##### Converting to Long Format
+
 ```{r}
 
 accidents_long <- accidents_01_15 %>%
@@ -189,7 +217,7 @@ accidents_long <- accidents_01_15 %>%
 str(accidents_long)
 ```
 
-Standardizing the State Names
+##### Standardizing the State Names
 
 ```{r}
 predictor_df <- predictor_df %>%
@@ -207,9 +235,8 @@ unique(predictor_df$State)
 
 ```
 
-
 ```{r}
-library(writexl)
+
 write_xlsx(predictor_df, "predictor_data.xlsx")
 
 ```
@@ -218,12 +245,4 @@ write_xlsx(predictor_df, "predictor_data.xlsx")
 write_xlsx(accidents_long, "accidents_data.xlsx")
 ```
 
-
-## End of data processing for Accidents and Predictors Data
-
-
-
-
-
-
-
+#### End of data processing for Accidents and Predictors Data

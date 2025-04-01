@@ -27,13 +27,13 @@ library(SCtools)
 
 ```{r}
 # Load crimes against women data
-crimes_women <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Master Sheet.xlsx", sheet='Women')
+crimes_women <- read_excel("Master Sheet.xlsx", sheet='Women')
 
 # Load murder data
-murders <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\Master Sheet.xlsx", sheet='Murders')
+murders <- read_excel("Master Sheet.xlsx", sheet='Murders')
 
 # Load the Estimated Population Data for different states 
-population <- read_excel("C:\\Users\\Akash Mittal\\Documents\\GitHub\\Causal Inference\\Crime against Women\\Final Ones\\India_Population_Estiamtes.xlsx")
+population <- read_excel("India_Population_Estiamtes.xlsx")
 
 # Loading the Predictors Dataset
 predictor_df <- read_excel("predictor_data.xlsx")
@@ -507,7 +507,7 @@ df_mod_modified_synth <- as.data.frame(df_mod_modified)
 Some states have missing data for predictors, so removing those states too.
 
 ```{r}
-# Below code was used to check states wjhich have missing values for the different perdictor varaibles
+# Below code was used to check states which have missing values for the different predictor variables
 # missing_sdp <- df_mod_modified_synth %>%
 #   filter(Year >= 2004 & Year <= 2012) %>%
 #   group_by(State, Year) %>%
